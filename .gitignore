@@ -1,0 +1,28 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+.terraform.lock.hcl
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+
+# Node / React
+node_modules/
+build/
+.env
+.env.local
+.env.production
+
+# AWS
+.aws/
+
+# OS
+.DS_Store
+Thumbs.db
