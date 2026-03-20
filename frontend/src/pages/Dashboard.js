@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { listDocuments } from "../services/api";
+import { listDocuments, deleteDocument } from "../services/api";
 import { onMessage } from "../services/websocket";
 import StatusBadge from "../components/StatusBadge";
 
@@ -8,6 +8,7 @@ export default function Dashboard() {
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [deletingId, setDeletingId] = useState(null);
 
   useEffect(() => {
     fetchDocuments();
@@ -37,6 +38,20 @@ export default function Dashboard() {
     }
   }
 
+  async function handleDelete(e, documentId) {
+    e.preventDefault(); // prevent navigating to document detail
+    if (!window.confirm("Delete this document? This cannot be undone.")) return;
+    setDeletingId(documentId);
+    try {
+      await deleteDocument(documentId);
+      setDocuments((prev) => prev.filter((d) => d.document_id !== documentId));
+    } catch (err) {
+      setError("Failed to delete document. Please try again.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   if (loading) return <div className="loading">Loading documents...</div>;
 
   return (
@@ -56,29 +71,38 @@ export default function Dashboard() {
       ) : (
         <div className="document-grid">
           {documents.map((doc) => (
-            <Link
-              key={doc.document_id}
-              to={`/documents/${doc.document_id}`}
-              className="document-card"
-            >
-              <div className="document-card-header">
-                <span className="document-icon">
-                  {doc.content_type === "application/pdf" ? "PDF" : "IMG"}
-                </span>
-                <StatusBadge status={doc.status} />
-              </div>
-              <h3 className="document-name">{doc.filename}</h3>
-              <p className="document-date">
-                {new Date(doc.created_at).toLocaleDateString()}
-              </p>
-              {doc.keywords && doc.keywords.length > 0 && (
-                <div className="keyword-list">
-                  {doc.keywords.slice(0, 3).map((kw) => (
-                    <span key={kw} className="keyword-tag">{kw}</span>
-                  ))}
+            <div key={doc.document_id} className="document-card-wrapper">
+              <Link
+                to={`/documents/${doc.document_id}`}
+                className="document-card"
+              >
+                <div className="document-card-header">
+                  <span className="document-icon">
+                    {doc.content_type === "application/pdf" ? "PDF" : "IMG"}
+                  </span>
+                  <StatusBadge status={doc.status} />
                 </div>
-              )}
-            </Link>
+                <h3 className="document-name">{doc.filename}</h3>
+                <p className="document-date">
+                  {new Date(doc.created_at).toLocaleDateString()}
+                </p>
+                {doc.keywords && doc.keywords.length > 0 && (
+                  <div className="keyword-list">
+                    {doc.keywords.slice(0, 3).map((kw) => (
+                      <span key={kw} className="keyword-tag">{kw}</span>
+                    ))}
+                  </div>
+                )}
+              </Link>
+              <button
+                className="btn-delete"
+                onClick={(e) => handleDelete(e, doc.document_id)}
+                disabled={deletingId === doc.document_id}
+                title="Delete document"
+              >
+                {deletingId === doc.document_id ? "Deleting…" : "✕"}
+              </button>
+            </div>
           ))}
         </div>
       )}

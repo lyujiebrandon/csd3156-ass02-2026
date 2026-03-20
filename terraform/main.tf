@@ -35,7 +35,7 @@ module "compute" {
   documents_table     = module.storage.documents_table_name
   jobs_table          = module.storage.jobs_table_name
   connections_table   = module.storage.connections_table_name
-  opensearch_endpoint = module.search.opensearch_endpoint
+  opensearch_endpoint = ""
   aws_region          = var.aws_region
   account_id          = data.aws_caller_identity.current.account_id
 }
@@ -53,17 +53,6 @@ module "api" {
   websocket_lambda_arn = module.compute.websocket_lambda_arn
 }
 
-module "search" {
-  source       = "./modules/search"
-  project_name = var.project_name
-  environment  = var.environment
-  account_id   = data.aws_caller_identity.current.account_id
-}
-
-module "cdn" {
-  source              = "./modules/cdn"
-  project_name        = var.project_name
-  environment         = var.environment
-  frontend_bucket_id  = module.storage.frontend_bucket_id
-  frontend_bucket_arn = module.storage.frontend_bucket_arn
-}
+# module "search" disabled — Academy LabRole lacks es:CreateDomain permission
+# module "cdn"    disabled — Academy LabRole lacks cloudfront:* permissions
+# Frontend is served via S3 static website (see storage module)

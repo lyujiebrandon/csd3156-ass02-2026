@@ -14,6 +14,10 @@ output "frontend_bucket_arn" {
   value = aws_s3_bucket.frontend.arn
 }
 
+output "frontend_website_url" {
+  value = aws_s3_bucket_website_configuration.frontend.website_endpoint
+}
+
 output "documents_table_name" {
   value = aws_dynamodb_table.documents.name
 }

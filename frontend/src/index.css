@@ -98,6 +98,30 @@ a:hover { text-decoration: underline; }
 
 /* ── Document Grid ─────────────────────────────────────────────────────────── */
 .document-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem; }
+.document-card-wrapper { position: relative; }
+.btn-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: #fee2e2;
+  color: #991b1b;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+  z-index: 1;
+}
+.document-card-wrapper:hover .btn-delete { opacity: 1; }
+.btn-delete:hover { background: #fca5a5; }
+.btn-delete:disabled { opacity: 0.5; cursor: not-allowed; }
 .document-card {
   background: var(--surface);
   border: 1px solid var(--border);

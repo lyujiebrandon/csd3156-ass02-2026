@@ -1,31 +1,23 @@
 import json
 import os
-import uuid
 import boto3
 from datetime import datetime, timezone
-from opensearchpy import OpenSearch, RequestsHttpConnection
-from requests_aws4auth import AWS4Auth
 
 s3 = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
-bedrock = boto3.client("bedrock-runtime", region_name=os.environ["AWS_REGION_NAME"])
-apigw = None  # Initialized per-invocation with WebSocket endpoint
 
 DOCUMENTS_TABLE = os.environ["DOCUMENTS_TABLE"]
 JOBS_TABLE = os.environ["JOBS_TABLE"]
 CONNECTIONS_TABLE = os.environ["CONNECTIONS_TABLE"]
-OPENSEARCH_ENDPOINT = os.environ["OPENSEARCH_ENDPOINT"]
+DOCUMENTS_BUCKET = os.environ["DOCUMENTS_BUCKET"]
 AWS_REGION_NAME = os.environ["AWS_REGION_NAME"]
-DOCUMENTS_BUCKET = os.environ.get("DOCUMENTS_BUCKET", "")
 
 documents_table = dynamodb.Table(DOCUMENTS_TABLE)
 jobs_table = dynamodb.Table(JOBS_TABLE)
 connections_table = dynamodb.Table(CONNECTIONS_TABLE)
 
-BEDROCK_LLM_MODEL = "anthropic.claude-3-sonnet-20240229-v1:0"
-BEDROCK_EMBED_MODEL = "amazon.titan-embed-text-v1"
-INDEX_NAME = "documents"
-CHUNK_SIZE = 1000  # characters per chunk
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL   = "claude-3-haiku-20240307"
 
 
 def lambda_handler(event, context):
@@ -57,9 +49,6 @@ def process_document(message):
         summary = generate_summary(text)
         keywords = extract_keywords(text)
 
-        # Chunk and index into OpenSearch
-        index_document(user_id, document_id, text, summary, keywords)
-
         # Update DynamoDB with AI results
         documents_table.update_item(
             Key={"user_id": user_id, "document_id": document_id},
@@ -88,117 +77,207 @@ def process_document(message):
         raise
 
 
-# ── Bedrock: Summarization ─────────────────────────────────────────────────────
+# ── AI: Try Bedrock, fall back to local NLP ───────────────────────────────────
 
 def generate_summary(text):
-    prompt = (
-        "You are a document analysis assistant. "
-        "Please provide a concise summary (3-5 sentences) of the following document:\n\n"
-        f"{text[:8000]}"  # Limit to first 8000 chars for prompt
-    )
-    return _invoke_claude(prompt)
+    """Try Bedrock Claude first; fall back to TextRank extractive summary."""
+    try:
+        return _invoke_claude(
+            "You are a document analysis assistant. "
+            "Provide a concise summary (3-5 sentences) of the following document:\n\n"
+            f"{text[:8000]}"
+        )
+    except Exception:
+        return _textrank_summary(text, num_sentences=5)
 
 
 def extract_keywords(text):
-    prompt = (
-        "Extract 10 key topics or keywords from the following document. "
-        "Return them as a JSON array of strings, e.g. [\"keyword1\", \"keyword2\"]. "
-        "Return ONLY the JSON array, no other text.\n\n"
-        f"{text[:4000]}"
-    )
-    response = _invoke_claude(prompt)
+    """Try Bedrock Claude first; fall back to TF-IDF keyword extraction."""
     try:
-        return json.loads(response)
-    except json.JSONDecodeError:
-        # Fallback: split by commas if LLM didn't return valid JSON
-        return [k.strip().strip('"') for k in response.strip("[]").split(",")]
+        response = _invoke_claude(
+            "Extract 10 key topics or keywords from the following document. "
+            "Return them as a JSON array of strings, e.g. [\"keyword1\", \"keyword2\"]. "
+            "Return ONLY the JSON array, no other text.\n\n"
+            f"{text[:4000]}"
+        )
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            return [k.strip().strip('"') for k in response.strip("[]").split(",")]
+    except Exception:
+        return _tfidf_keywords(text, top_n=10)
 
 
 def _invoke_claude(prompt):
-    body = json.dumps({
-        "anthropic_version": "bedrock-2023-05-31",
+    """Call Anthropic API directly via urllib — no AWS permissions needed."""
+    import urllib.request
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY not set")
+    payload = json.dumps({
+        "model": ANTHROPIC_MODEL,
         "max_tokens": 1024,
         "messages": [{"role": "user", "content": prompt}],
-    })
-    response = bedrock.invoke_model(modelId=BEDROCK_LLM_MODEL, body=body)
-    result = json.loads(response["body"].read())
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=payload,
+        headers={
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        result = json.loads(resp.read())
     return result["content"][0]["text"]
 
 
-# ── Bedrock: Embeddings ────────────────────────────────────────────────────────
+# ── NLP Utilities (pure Python stdlib) ───────────────────────────────────────
 
-def get_embedding(text):
-    body = json.dumps({"inputText": text[:8000]})
-    response = bedrock.invoke_model(modelId=BEDROCK_EMBED_MODEL, body=body)
-    result = json.loads(response["body"].read())
-    return result["embedding"]
+import re
+import math
+from collections import Counter
 
-
-# ── OpenSearch: Indexing ───────────────────────────────────────────────────────
-
-def _get_os_client():
-    credentials = boto3.Session().get_credentials()
-    auth = AWS4Auth(
-        credentials.access_key,
-        credentials.secret_key,
-        AWS_REGION_NAME,
-        "es",
-        session_token=credentials.token,
-    )
-    return OpenSearch(
-        hosts=[{"host": OPENSEARCH_ENDPOINT, "port": 443}],
-        http_auth=auth,
-        use_ssl=True,
-        verify_certs=True,
-        connection_class=RequestsHttpConnection,
-    )
+STOPWORDS = {
+    "the","a","an","and","or","but","in","on","at","to","for","of","with",
+    "is","are","was","were","be","been","being","have","has","had","do",
+    "does","did","will","would","could","should","may","might","shall",
+    "that","this","these","those","it","its","by","from","as","into",
+    "not","no","so","if","then","than","when","where","which","who",
+    "their","they","we","our","your","my","his","her","all","each",
+    "any","both","few","more","most","other","some","such","up","out",
+    "about","also","can","just","after","before","between","through",
+    "during","since","while","although","however","therefore","thus",
+    "i","you","he","she","we","they","me","him","us","them",
+}
 
 
-def _ensure_index(client):
-    if client.indices.exists(INDEX_NAME):
-        return
-    client.indices.create(INDEX_NAME, body={
-        "mappings": {
-            "properties": {
-                "user_id":     {"type": "keyword"},
-                "document_id": {"type": "keyword"},
-                "chunk_id":    {"type": "keyword"},
-                "text":        {"type": "text"},
-                "summary":     {"type": "text"},
-                "keywords":    {"type": "keyword"},
-                "embedding":   {"type": "knn_vector", "dimension": 1536},
-                "created_at":  {"type": "date"},
-            }
-        },
-        "settings": {"index": {"knn": True}},
-    })
+def _tokenize(text):
+    return [w.lower() for w in re.findall(r'\b[a-zA-Z]{3,}\b', text) if w.lower() not in STOPWORDS]
 
 
-def index_document(user_id, document_id, text, summary, keywords):
-    client = _get_os_client()
-    _ensure_index(client)
+def _split_sentences(text):
+    raw = re.split(r'(?<=[.!?])\s+', text.strip())
+    return [s.strip() for s in raw if len(s.split()) >= 6]
 
-    # Split text into chunks
-    chunks = [text[i:i + CHUNK_SIZE] for i in range(0, len(text), CHUNK_SIZE)]
 
-    for i, chunk in enumerate(chunks):
-        embedding = get_embedding(chunk)
-        chunk_id = f"{document_id}_chunk_{i}"
+def _tfidf_vectors(sentences):
+    """Compute TF-IDF vector (as Counter) for each sentence."""
+    tokenized = [_tokenize(s) for s in sentences]
+    n = len(sentences)
+    # Document frequency
+    df = Counter()
+    for tokens in tokenized:
+        for w in set(tokens):
+            df[w] += 1
+    # IDF
+    idf = {w: math.log((n + 1) / (freq + 1)) + 1 for w, freq in df.items()}
+    # TF-IDF vectors
+    vectors = []
+    for tokens in tokenized:
+        tf = Counter(tokens)
+        total = len(tokens) or 1
+        vec = {w: (count / total) * idf.get(w, 1) for w, count in tf.items()}
+        vectors.append(vec)
+    return vectors
 
-        client.index(
-            index=INDEX_NAME,
-            id=chunk_id,
-            body={
-                "user_id":     user_id,
-                "document_id": document_id,
-                "chunk_id":    chunk_id,
-                "text":        chunk,
-                "summary":     summary if i == 0 else "",
-                "keywords":    keywords if i == 0 else [],
-                "embedding":   embedding,
-                "created_at":  datetime.now(timezone.utc).isoformat(),
-            },
-        )
+
+def _cosine_similarity(v1, v2):
+    common = set(v1) & set(v2)
+    if not common:
+        return 0.0
+    dot = sum(v1[w] * v2[w] for w in common)
+    mag1 = math.sqrt(sum(x * x for x in v1.values()))
+    mag2 = math.sqrt(sum(x * x for x in v2.values()))
+    return dot / (mag1 * mag2) if mag1 and mag2 else 0.0
+
+
+def _textrank_summary(text, num_sentences=5):
+    """
+    TextRank: rank sentences by graph-based importance (similar to PageRank).
+    Returns the top-ranked sentences in their original document order.
+    """
+    sentences = _split_sentences(text)
+    if len(sentences) <= num_sentences:
+        return " ".join(sentences)
+
+    vectors = _tfidf_vectors(sentences)
+    n = len(sentences)
+
+    # Build similarity matrix
+    sim = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(n):
+            if i != j:
+                sim[i][j] = _cosine_similarity(vectors[i], vectors[j])
+
+    # PageRank iteration
+    damping = 0.85
+    scores = [1.0 / n] * n
+    for _ in range(30):
+        new_scores = [(1 - damping) / n] * n
+        for i in range(n):
+            col_sum = sum(sim[k][i] for k in range(n))
+            if col_sum == 0:
+                continue
+            for j in range(n):
+                if sim[j][i] > 0:
+                    new_scores[j] += damping * scores[i] * (sim[j][i] / col_sum)
+        scores = new_scores
+
+    # Pick top sentences, restore original order
+    ranked = sorted(range(n), key=lambda i: scores[i], reverse=True)
+    top_indices = sorted(ranked[:num_sentences])
+    return " ".join(sentences[i] for i in top_indices)
+
+
+def _tfidf_keywords(text, top_n=10):
+    """
+    TF-IDF keyword extraction: score each unique word by its TF-IDF weight
+    across document paragraphs, favouring content-specific terms.
+    """
+    paragraphs = [p.strip() for p in re.split(r'\n+', text) if len(p.strip()) > 30]
+    if not paragraphs:
+        paragraphs = [text]
+
+    vectors = _tfidf_vectors(paragraphs)
+    # Sum TF-IDF scores across all paragraphs
+    global_scores = Counter()
+    for vec in vectors:
+        for word, score in vec.items():
+            global_scores[word] += score
+
+    # Prefer longer words (more specific) with a slight length bonus
+    adjusted = {w: s * (1 + 0.05 * len(w)) for w, s in global_scores.items()}
+    top = sorted(adjusted, key=adjusted.get, reverse=True)
+    return top[:top_n]
+
+
+def _tfidf_answer(question, context_text, top_k=5):
+    """
+    TF-IDF sentence retrieval for Q&A: find the sentences most similar
+    to the question, then compose a coherent answer.
+    """
+    sentences = _split_sentences(context_text)
+    if not sentences:
+        return "I could not find relevant content in the document."
+
+    all_texts = sentences + [question]
+    vectors = _tfidf_vectors(all_texts)
+    q_vec = vectors[-1]
+    sent_vecs = vectors[:-1]
+
+    scored = [(i, _cosine_similarity(q_vec, sv)) for i, sv in enumerate(sent_vecs)]
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    # Take top_k relevant sentences, restore order for readability
+    top_indices = sorted([i for i, score in scored[:top_k] if score > 0])
+    if not top_indices:
+        return "I could not find a relevant answer in the document."
+
+    answer_sentences = [sentences[i] for i in top_indices]
+    return "Based on the document: " + " ".join(answer_sentences)
 
 
 # ── Q&A (RAG) ─────────────────────────────────────────────────────────────────
@@ -207,22 +286,36 @@ def handle_qa_request(event):
     user_id = event["requestContext"]["authorizer"]["claims"]["sub"]
     body = json.loads(event.get("body") or "{}")
     question = body.get("question")
-    document_id = body.get("document_id")  # optional — scope to one doc
+    document_id = body.get("document_id")
 
     if not question:
         return _response(400, {"error": "question is required"})
 
-    # Embed the question
-    query_embedding = get_embedding(question)
+    if not document_id:
+        return _response(400, {"error": "document_id is required"})
 
-    # Retrieve relevant chunks from OpenSearch
-    context_chunks = semantic_search(user_id, query_embedding, document_id)
+    # Load document summary and text for context
+    result = documents_table.get_item(
+        Key={"user_id": user_id, "document_id": document_id}
+    )
+    item = result.get("Item")
 
-    if not context_chunks:
-        return _response(200, {"answer": "No relevant content found for your question."})
+    if not item:
+        return _response(404, {"error": "Document not found"})
 
-    # Build RAG prompt
-    context = "\n\n---\n\n".join(c["text"] for c in context_chunks)
+    if item.get("status") != "COMPLETE":
+        return _response(400, {"error": "Document is still processing"})
+
+    # Use summary + extracted text as context
+    context = item.get("summary", "")
+    text_key = item.get("s3_key", "") + ".extracted.txt"
+    try:
+        obj = s3.get_object(Bucket=DOCUMENTS_BUCKET, Key=text_key)
+        full_text = obj["Body"].read().decode("utf-8")
+        context = full_text[:12000]  # Use first 12k chars as context
+    except Exception:
+        context = item.get("summary", "No content available")
+
     prompt = (
         "You are a helpful document assistant. "
         "Answer the user's question using ONLY the context below. "
@@ -231,47 +324,20 @@ def handle_qa_request(event):
         f"Question: {question}"
     )
 
-    answer = _invoke_claude(prompt)
+    try:
+        answer = _invoke_claude(prompt)
+    except Exception:
+        answer = _tfidf_answer(question, context)
+
     return _response(200, {
         "answer": answer,
-        "sources": [{"document_id": c["document_id"], "chunk_id": c["chunk_id"]} for c in context_chunks],
+        "sources": [{"document_id": document_id}],
     })
-
-
-def semantic_search(user_id, query_embedding, document_id=None):
-    client = _get_os_client()
-
-    must_filters = [{"term": {"user_id": user_id}}]
-    if document_id:
-        must_filters.append({"term": {"document_id": document_id}})
-
-    response = client.search(
-        index=INDEX_NAME,
-        body={
-            "size": 5,
-            "query": {
-                "bool": {
-                    "must": must_filters,
-                    "should": [{
-                        "knn": {
-                            "embedding": {
-                                "vector": query_embedding,
-                                "k": 5,
-                            }
-                        }
-                    }],
-                }
-            },
-        },
-    )
-
-    return [hit["_source"] for hit in response["hits"]["hits"]]
 
 
 # ── WebSocket Notifications ────────────────────────────────────────────────────
 
 def notify_user(user_id, payload):
-    # Find all active connections for this user
     result = connections_table.query(
         IndexName="user_id-index",
         KeyConditionExpression=boto3.dynamodb.conditions.Key("user_id").eq(user_id),
@@ -280,7 +346,6 @@ def notify_user(user_id, payload):
     if not result.get("Items"):
         return
 
-    # Get WebSocket management URL from env (set by Terraform after deploy)
     ws_endpoint = os.environ.get("WEBSOCKET_ENDPOINT", "")
     if not ws_endpoint:
         return
@@ -297,8 +362,7 @@ def notify_user(user_id, payload):
                 ConnectionId=conn["connection_id"],
                 Data=message.encode("utf-8"),
             )
-        except apigw_mgmt.exceptions.GoneException:
-            # Stale connection — remove it
+        except Exception:
             connections_table.delete_item(
                 Key={"connection_id": conn["connection_id"]}
             )

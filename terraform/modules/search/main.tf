@@ -36,10 +36,7 @@ resource "aws_opensearch_domain" "main" {
     }
   }
 
-  tags = {
-    Name        = "${var.project_name}-search"
-    Environment = var.environment
-  }
+  # Tags omitted — Academy LabRole lacks es:AddTags permission
 }
 
 resource "aws_opensearch_domain_policy" "main" {

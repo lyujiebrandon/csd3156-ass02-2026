@@ -29,80 +29,9 @@ resource "aws_sqs_queue" "ai" {
   tags = { Environment = var.environment }
 }
 
-# ── IAM Role for Lambda ───────────────────────────────────────────────────────
-resource "aws_iam_role" "lambda_exec" {
-  name = "${var.project_name}-lambda-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action    = "sts:AssumeRole"
-      Effect    = "Allow"
-      Principal = { Service = "lambda.amazonaws.com" }
-    }]
-  })
-}
-
-resource "aws_iam_role_policy" "lambda_policy" {
-  name = "${var.project_name}-lambda-policy"
-  role = aws_iam_role.lambda_exec.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
-        Resource = "arn:aws:logs:*:*:*"
-      },
-      {
-        Effect = "Allow"
-        Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:GeneratePresignedUrl"]
-        Resource = "arn:aws:s3:::${var.documents_bucket}/*"
-      },
-      {
-        Effect = "Allow"
-        Action = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem",
-                  "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan"]
-        Resource = [
-          "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.documents_table}",
-          "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.jobs_table}",
-          "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.connections_table}"
-        ]
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["sqs:SendMessage", "sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
-        Resource = [aws_sqs_queue.ocr.arn, aws_sqs_queue.ai.arn]
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["textract:StartDocumentTextDetection", "textract:GetDocumentTextDetection",
-                    "textract:DetectDocumentText"]
-        Resource = "*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["bedrock:InvokeModel"]
-        Resource = "*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["es:ESHttpGet", "es:ESHttpPost", "es:ESHttpPut"]
-        Resource = "arn:aws:es:${var.aws_region}:${var.account_id}:domain/${var.project_name}-search/*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["execute-api:ManageConnections"]
-        Resource = "arn:aws:execute-api:${var.aws_region}:${var.account_id}:*/*/@connections/*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
-        Resource = "*"
-      }
-    ]
-  })
+# ── IAM Role for Lambda (use Academy LabRole — cannot create roles in Learner Lab) ──
+data "aws_iam_role" "lambda_exec" {
+  name = "LabRole"
 }
 
 # ── Lambda: Upload Service ────────────────────────────────────────────────────
@@ -115,7 +44,7 @@ data "archive_file" "upload" {
 resource "aws_lambda_function" "upload" {
   filename         = data.archive_file.upload.output_path
   function_name    = "${var.project_name}-upload-service"
-  role             = aws_iam_role.lambda_exec.arn
+  role             = data.aws_iam_role.lambda_exec.arn
   handler          = "handler.lambda_handler"
   runtime          = "python3.12"
   source_code_hash = data.archive_file.upload.output_base64sha256
@@ -143,7 +72,7 @@ data "archive_file" "ocr" {
 resource "aws_lambda_function" "ocr" {
   filename         = data.archive_file.ocr.output_path
   function_name    = "${var.project_name}-ocr-service"
-  role             = aws_iam_role.lambda_exec.arn
+  role             = data.aws_iam_role.lambda_exec.arn
   handler          = "handler.lambda_handler"
   runtime          = "python3.12"
   source_code_hash = data.archive_file.ocr.output_base64sha256
@@ -178,7 +107,7 @@ data "archive_file" "ai" {
 resource "aws_lambda_function" "ai" {
   filename         = data.archive_file.ai.output_path
   function_name    = "${var.project_name}-ai-service"
-  role             = aws_iam_role.lambda_exec.arn
+  role             = data.aws_iam_role.lambda_exec.arn
   handler          = "handler.lambda_handler"
   runtime          = "python3.12"
   source_code_hash = data.archive_file.ai.output_base64sha256
@@ -187,6 +116,7 @@ resource "aws_lambda_function" "ai" {
 
   environment {
     variables = {
+      DOCUMENTS_BUCKET    = var.documents_bucket
       DOCUMENTS_TABLE     = var.documents_table
       JOBS_TABLE          = var.jobs_table
       CONNECTIONS_TABLE   = var.connections_table
@@ -214,7 +144,7 @@ data "archive_file" "search" {
 resource "aws_lambda_function" "search" {
   filename         = data.archive_file.search.output_path
   function_name    = "${var.project_name}-search-service"
-  role             = aws_iam_role.lambda_exec.arn
+  role             = data.aws_iam_role.lambda_exec.arn
   handler          = "handler.lambda_handler"
   runtime          = "python3.12"
   source_code_hash = data.archive_file.search.output_base64sha256
@@ -242,7 +172,7 @@ data "archive_file" "websocket" {
 resource "aws_lambda_function" "websocket" {
   filename         = data.archive_file.websocket.output_path
   function_name    = "${var.project_name}-websocket-handler"
-  role             = aws_iam_role.lambda_exec.arn
+  role             = data.aws_iam_role.lambda_exec.arn
   handler          = "handler.lambda_handler"
   runtime          = "python3.12"
   source_code_hash = data.archive_file.websocket.output_base64sha256

@@ -1,17 +1,19 @@
-# ── CloudFront Origin Access Control ─────────────────────────────────────────
-resource "aws_cloudfront_origin_access_control" "frontend" {
-  name                              = "${var.project_name}-oac"
-  origin_access_control_origin_type = "s3"
-  signing_behavior                  = "always"
-  signing_protocol                  = "sigv4"
+# ── CloudFront Origin Access Identity (OAI) ───────────────────────────────────
+# Using OAI instead of OAC — Academy Learner Lab does not permit
+# cloudfront:CreateOriginAccessControl
+resource "aws_cloudfront_origin_access_identity" "frontend" {
+  comment = "${var.project_name}-oai"
 }
 
 # ── CloudFront Distribution ───────────────────────────────────────────────────
 resource "aws_cloudfront_distribution" "frontend" {
   origin {
-    domain_name              = "${var.frontend_bucket_id}.s3.amazonaws.com"
-    origin_id                = "S3-${var.frontend_bucket_id}"
-    origin_access_control_id = aws_cloudfront_origin_access_control.frontend.id
+    domain_name = "${var.frontend_bucket_id}.s3.amazonaws.com"
+    origin_id   = "S3-${var.frontend_bucket_id}"
+
+    s3_origin_config {
+      origin_access_identity = aws_cloudfront_origin_access_identity.frontend.cloudfront_access_identity_path
+    }
   }
 
   enabled             = true
@@ -59,21 +61,15 @@ resource "aws_cloudfront_distribution" "frontend" {
   }
 }
 
-# ── S3 Bucket Policy (allow CloudFront OAC) ───────────────────────────────────
+# ── S3 Bucket Policy (allow CloudFront OAI) ───────────────────────────────────
 data "aws_iam_policy_document" "frontend_bucket" {
   statement {
     actions   = ["s3:GetObject"]
     resources = ["${var.frontend_bucket_arn}/*"]
 
     principals {
-      type        = "Service"
-      identifiers = ["cloudfront.amazonaws.com"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "AWS:SourceArn"
-      values   = [aws_cloudfront_distribution.frontend.arn]
+      type        = "AWS"
+      identifiers = [aws_cloudfront_origin_access_identity.frontend.iam_arn]
     }
   }
 }

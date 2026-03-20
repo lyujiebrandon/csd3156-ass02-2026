@@ -41,6 +41,7 @@ def _get_user_id(event):
 def lambda_handler(event, context):
     method = event["httpMethod"]
     path = event.get("path", "")
+    params = event.get("pathParameters") or {}
 
     if method == "POST" and path.endswith("/documents"):
         return handle_create_upload(event)
@@ -48,6 +49,10 @@ def lambda_handler(event, context):
         return handle_list_documents(event)
     elif method == "POST" and "/process" in path:
         return handle_start_processing(event)
+    elif method == "GET" and params.get("document_id"):
+        return handle_get_document(event)
+    elif method == "DELETE" and params.get("document_id"):
+        return handle_delete_document(event)
     else:
         return _response(404, {"error": "Not found"})
 
@@ -149,3 +154,37 @@ def handle_start_processing(event):
     )
 
     return _response(202, {"message": "Processing started", "document_id": document_id})
+
+
+def handle_get_document(event):
+    """Return metadata for a single document."""
+    user_id = _get_user_id(event)
+    document_id = event["pathParameters"]["document_id"]
+
+    result = table.get_item(Key={"user_id": user_id, "document_id": document_id})
+    item = result.get("Item")
+
+    if not item:
+        return _response(404, {"error": "Document not found"})
+
+    return _response(200, item)
+
+
+def handle_delete_document(event):
+    """Delete a document record and its S3 object."""
+    user_id = _get_user_id(event)
+    document_id = event["pathParameters"]["document_id"]
+
+    result = table.get_item(Key={"user_id": user_id, "document_id": document_id})
+    item = result.get("Item")
+
+    if not item:
+        return _response(404, {"error": "Document not found"})
+
+    # Delete from S3
+    s3.delete_object(Bucket=DOCUMENTS_BUCKET, Key=item["s3_key"])
+
+    # Delete from DynamoDB
+    table.delete_item(Key={"user_id": user_id, "document_id": document_id})
+
+    return _response(200, {"message": "Document deleted"})

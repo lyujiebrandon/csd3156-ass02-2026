@@ -1,6 +1,6 @@
-output "cloudfront_domain" {
-  description = "CloudFront domain for the frontend"
-  value       = module.cdn.cloudfront_domain
+output "frontend_url" {
+  description = "S3 static website URL for the frontend"
+  value       = "http://${module.storage.frontend_website_url}"
 }
 
 output "api_gateway_url" {
@@ -28,7 +28,4 @@ output "documents_bucket" {
   value       = module.storage.documents_bucket_name
 }
 
-output "opensearch_endpoint" {
-  description = "OpenSearch domain endpoint"
-  value       = module.search.opensearch_endpoint
-}
+# opensearch_endpoint output removed — OpenSearch disabled in Academy Learner Lab
