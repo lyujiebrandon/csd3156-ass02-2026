@@ -201,6 +201,7 @@ def process_document(
             "user_id": user_id,
             "s3_key": item["s3_key"],
             "bucket": DOCUMENTS_BUCKET,
+            "content_type": item["content_type"],
         }),
     )
 
@@ -360,7 +361,12 @@ def search_documents(body: SearchRequest, claims: dict = Depends(verify_token)):
         for word in query_lower.split():
             score += searchable.count(word)
         if score > 0:
-            results.append({**item, "_score": score})
+            results.append({
+                **item,
+                "score": score,
+                "text": item.get("summary", ""),
+            })
 
-    results.sort(key=lambda x: x["_score"], reverse=True)
-    return {"results": results[:limit], "total": len(results)}
+    results.sort(key=lambda x: x["score"], reverse=True)
+    top = results[:limit]
+    return {"results": top, "count": len(results), "query": body.query}

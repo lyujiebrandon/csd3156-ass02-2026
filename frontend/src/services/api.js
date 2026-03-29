@@ -48,10 +48,7 @@ export async function deleteDocument(documentId) {
 // ── AI / Q&A ──────────────────────────────────────────────────────────────────
 
 export async function askQuestion(documentId, question) {
-  const { data } = await api.post(`/documents/${documentId}/analyze`, {
-    question,
-    document_id: documentId,
-  });
+  const { data } = await api.post(`/documents/${documentId}/qa`, { question });
   return data; // { answer, sources }
 }
 
