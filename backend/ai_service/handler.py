@@ -16,16 +16,12 @@ documents_table = dynamodb.Table(DOCUMENTS_TABLE)
 jobs_table = dynamodb.Table(JOBS_TABLE)
 connections_table = dynamodb.Table(CONNECTIONS_TABLE)
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL   = "claude-3-haiku-20240307"
+BEDROCK_MODEL = "anthropic.claude-3-haiku-20240307-v1:0"
 
 
 def lambda_handler(event, context):
-    # Handle direct Q&A API calls (from API Gateway)
-    if "httpMethod" in event:
-        return handle_qa_request(event)
-
-    # Handle SQS trigger (post-OCR AI analysis)
+    # Triggered by SQS only (post-OCR AI analysis)
+    # Q&A requests are handled by the EC2 FastAPI backend
     for record in event.get("Records", []):
         message = json.loads(record["body"])
         process_document(message)
@@ -109,27 +105,15 @@ def extract_keywords(text):
 
 
 def _invoke_claude(prompt):
-    """Call Anthropic API directly via urllib — no AWS permissions needed."""
-    import urllib.request
-    if not ANTHROPIC_API_KEY:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
-    payload = json.dumps({
-        "model": ANTHROPIC_MODEL,
+    """Call AWS Bedrock Claude (no external API key needed — uses LabRole IAM)."""
+    bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION_NAME)
+    body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": 1024,
         "messages": [{"role": "user", "content": prompt}],
-    }).encode()
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=payload,
-        headers={
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        result = json.loads(resp.read())
+    })
+    resp = bedrock.invoke_model(modelId=BEDROCK_MODEL, body=body)
+    result = json.loads(resp["body"].read())
     return result["content"][0]["text"]
 
 

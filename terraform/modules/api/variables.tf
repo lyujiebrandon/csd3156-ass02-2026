@@ -1,9 +1,3 @@
-variable "project_name" { type = string }
-variable "environment" { type = string }
-variable "aws_region" { type = string }
-variable "account_id" { type = string }
-variable "cognito_user_pool_arn" { type = string }
-variable "upload_lambda_arn" { type = string }
-variable "ai_lambda_arn" { type = string }
-variable "search_lambda_arn" { type = string }
+variable "project_name"        { type = string }
+variable "environment"         { type = string }
 variable "websocket_lambda_arn" { type = string }

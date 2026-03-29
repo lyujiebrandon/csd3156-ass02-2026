@@ -5,7 +5,7 @@ resource "aws_sqs_queue" "ocr_dlq" {
 }
 
 resource "aws_sqs_queue" "ocr" {
-  name                      = "${var.project_name}-ocr-queue"
+  name                       = "${var.project_name}-ocr-queue"
   visibility_timeout_seconds = 300
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.ocr_dlq.arn
@@ -20,7 +20,7 @@ resource "aws_sqs_queue" "ai_dlq" {
 }
 
 resource "aws_sqs_queue" "ai" {
-  name                      = "${var.project_name}-ai-queue"
+  name                       = "${var.project_name}-ai-queue"
   visibility_timeout_seconds = 300
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.ai_dlq.arn
@@ -34,35 +34,7 @@ data "aws_iam_role" "lambda_exec" {
   name = "LabRole"
 }
 
-# ── Lambda: Upload Service ────────────────────────────────────────────────────
-data "archive_file" "upload" {
-  type        = "zip"
-  source_dir  = "${path.root}/../backend/upload_service"
-  output_path = "${path.module}/zips/upload_service.zip"
-}
-
-resource "aws_lambda_function" "upload" {
-  filename         = data.archive_file.upload.output_path
-  function_name    = "${var.project_name}-upload-service"
-  role             = data.aws_iam_role.lambda_exec.arn
-  handler          = "handler.lambda_handler"
-  runtime          = "python3.12"
-  source_code_hash = data.archive_file.upload.output_base64sha256
-  timeout          = 30
-  tracing_config { mode = "Active" }
-
-  environment {
-    variables = {
-      DOCUMENTS_BUCKET  = var.documents_bucket
-      DOCUMENTS_TABLE   = var.documents_table
-      OCR_QUEUE_URL     = aws_sqs_queue.ocr.url
-    }
-  }
-
-  tags = { Environment = var.environment }
-}
-
-# ── Lambda: OCR Service ───────────────────────────────────────────────────────
+# ── Lambda: OCR Service (async, triggered by SQS) ─────────────────────────────
 data "archive_file" "ocr" {
   type        = "zip"
   source_dir  = "${path.root}/../backend/ocr_service"
@@ -82,6 +54,7 @@ resource "aws_lambda_function" "ocr" {
   environment {
     variables = {
       DOCUMENTS_BUCKET = var.documents_bucket
+      DOCUMENTS_TABLE  = var.documents_table
       JOBS_TABLE       = var.jobs_table
       AI_QUEUE_URL     = aws_sqs_queue.ai.url
       AWS_REGION_NAME  = var.aws_region
@@ -97,7 +70,7 @@ resource "aws_lambda_event_source_mapping" "ocr_trigger" {
   batch_size       = 1
 }
 
-# ── Lambda: AI Analysis Service ───────────────────────────────────────────────
+# ── Lambda: AI Analysis Service (async, triggered by SQS) ─────────────────────
 data "archive_file" "ai" {
   type        = "zip"
   source_dir  = "${path.root}/../backend/ai_service"
@@ -116,12 +89,12 @@ resource "aws_lambda_function" "ai" {
 
   environment {
     variables = {
-      DOCUMENTS_BUCKET    = var.documents_bucket
-      DOCUMENTS_TABLE     = var.documents_table
-      JOBS_TABLE          = var.jobs_table
-      CONNECTIONS_TABLE   = var.connections_table
-      OPENSEARCH_ENDPOINT = var.opensearch_endpoint
-      AWS_REGION_NAME     = var.aws_region
+      DOCUMENTS_BUCKET  = var.documents_bucket
+      DOCUMENTS_TABLE   = var.documents_table
+      JOBS_TABLE        = var.jobs_table
+      CONNECTIONS_TABLE = var.connections_table
+      AWS_REGION_NAME   = var.aws_region
+      BEDROCK_REGION    = var.aws_region
     }
   }
 
@@ -132,34 +105,6 @@ resource "aws_lambda_event_source_mapping" "ai_trigger" {
   event_source_arn = aws_sqs_queue.ai.arn
   function_name    = aws_lambda_function.ai.arn
   batch_size       = 1
-}
-
-# ── Lambda: Search Service ────────────────────────────────────────────────────
-data "archive_file" "search" {
-  type        = "zip"
-  source_dir  = "${path.root}/../backend/search_service"
-  output_path = "${path.module}/zips/search_service.zip"
-}
-
-resource "aws_lambda_function" "search" {
-  filename         = data.archive_file.search.output_path
-  function_name    = "${var.project_name}-search-service"
-  role             = data.aws_iam_role.lambda_exec.arn
-  handler          = "handler.lambda_handler"
-  runtime          = "python3.12"
-  source_code_hash = data.archive_file.search.output_base64sha256
-  timeout          = 30
-  tracing_config { mode = "Active" }
-
-  environment {
-    variables = {
-      OPENSEARCH_ENDPOINT = var.opensearch_endpoint
-      DOCUMENTS_TABLE     = var.documents_table
-      AWS_REGION_NAME     = var.aws_region
-    }
-  }
-
-  tags = { Environment = var.environment }
 }
 
 # ── Lambda: WebSocket Handler ─────────────────────────────────────────────────
