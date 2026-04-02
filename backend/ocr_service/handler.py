@@ -80,20 +80,21 @@ def _extract_image(s3_key):
 
 def _extract_pdf(s3_key):
     """Asynchronous Textract for PDFs — waits for completion."""
+    import time
+
     response = textract.start_document_text_detection(
         DocumentLocation={"S3Object": {"Bucket": DOCUMENTS_BUCKET, "Name": s3_key}}
     )
     job_id = response["JobId"]
 
-    # Poll until complete (Lambda timeout is 300s)
-    import time
-    while True:
+    # Poll until complete — bail out after 240s so Lambda can fail cleanly
+    deadline = time.time() + 240
+    while time.time() < deadline:
         result = textract.get_document_text_detection(JobId=job_id)
         status = result["JobStatus"]
 
         if status == "SUCCEEDED":
             blocks = result["Blocks"]
-            # Paginate through all results
             while "NextToken" in result:
                 result = textract.get_document_text_detection(
                     JobId=job_id, NextToken=result["NextToken"]
@@ -105,6 +106,8 @@ def _extract_pdf(s3_key):
             raise RuntimeError(f"Textract job {job_id} failed")
 
         time.sleep(5)
+
+    raise RuntimeError(f"Textract job {job_id} timed out after 240s")
 
 
 def _parse_blocks(blocks):
