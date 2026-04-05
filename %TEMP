@@ -1,0 +1,1 @@
+{"commands":["aws s3 cp s3://documind-group20-documents-587714383772/app/ec2_app.zip /opt/ec2_app.zip","unzip -o /opt/ec2_app.zip -d /opt/ec2_app","python3.11 -m pip install -r /opt/ec2_app/requirements.txt -q","systemctl restart documind"]}  \ssm.json

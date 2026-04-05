@@ -1,4 +1,10 @@
 @echo off
+:: Keep window open when double-clicked from Explorer
+if not defined SETUP_RELAUNCHED (
+    set SETUP_RELAUNCHED=1
+    cmd /k "%~f0"
+    exit /b
+)
 setlocal EnableDelayedExpansion
 title DocuMind - Project Setup
 
@@ -152,7 +158,7 @@ call :section "Installing frontend dependencies..."
 
 cd /d "%FRONTEND_DIR%"
 
-npm install
+npm install --no-audit
 if errorlevel 1 (
     echo [ERROR] npm install failed.
     goto :error
@@ -186,8 +192,10 @@ echo       cd terraform ^&^& terraform destroy
 
 cd /d "%ROOT%"
 echo.
+echo  *** Copy the URLs above, then press any key or close this window. ***
+echo.
 pause
-goto :eof
+cmd /k
 
 :: ============================================================
 :: Helpers

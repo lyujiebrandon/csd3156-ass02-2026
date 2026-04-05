@@ -33,6 +33,11 @@ output "documents_bucket" {
   value       = module.storage.documents_bucket_name
 }
 
+output "frontend_bucket" {
+  description = "S3 bucket name for the frontend static website"
+  value       = module.storage.frontend_bucket_id
+}
+
 output "cloudwatch_dashboard_url" {
   description = "URL to the CloudWatch monitoring dashboard"
   value       = module.monitoring.dashboard_url
